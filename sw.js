@@ -1,4 +1,4 @@
-const CACHE = 'bmw-obd2-v2';
+const CACHE = 'bmw-obd2-v3';
 const ASSETS = ['./index.html', './manifest.json', './icon.svg', './icon-180.png'];
 
 self.addEventListener('install', e => {
