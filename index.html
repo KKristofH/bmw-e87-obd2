@@ -1,0 +1,585 @@
+<!DOCTYPE html>
+<html lang="hu">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>BMW E87 OBD2</title>
+  <link rel="manifest" href="manifest.json">
+  <meta name="theme-color" content="#0d1117">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
+  <meta name="apple-mobile-web-app-title" content="BMW OBD2">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: #0d1117;
+      color: #e6edf3;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      min-height: 100vh;
+      min-height: 100dvh;
+    }
+
+    /* ── Header ── */
+    .header {
+      background: linear-gradient(135deg, #1a2a4a 0%, #0d1117 100%);
+      padding: 14px 18px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-bottom: 1px solid #21262d;
+      position: sticky;
+      top: 0;
+      z-index: 10;
+    }
+    .logo-area { display: flex; align-items: center; gap: 10px; }
+    .logo {
+      font-size: 18px;
+      font-weight: 800;
+      letter-spacing: 3px;
+      color: #4d9de0;
+    }
+    .logo span { color: #8b949e; font-weight: 400; font-size: 13px; letter-spacing: 1px; }
+
+    .status-dot {
+      width: 9px; height: 9px;
+      border-radius: 50%;
+      background: #f85149;
+      flex-shrink: 0;
+    }
+    .status-dot.connected {
+      background: #3fb950;
+      box-shadow: 0 0 0 3px rgba(63,185,80,.25);
+      animation: glow 2s ease-in-out infinite;
+    }
+    @keyframes glow {
+      0%,100% { box-shadow: 0 0 0 3px rgba(63,185,80,.25); }
+      50% { box-shadow: 0 0 0 6px rgba(63,185,80,0); }
+    }
+
+    .connect-btn {
+      background: #1f6feb;
+      color: #fff;
+      border: none;
+      padding: 8px 18px;
+      border-radius: 20px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background .2s, transform .1s;
+      white-space: nowrap;
+    }
+    .connect-btn:active { transform: scale(.96); }
+    .connect-btn:disabled { background: #21262d; color: #8b949e; cursor: not-allowed; }
+    .connect-btn.disconnecting { background: #da3633; }
+
+    /* ── Status bar ── */
+    .statusbar {
+      background: #161b22;
+      padding: 7px 18px;
+      font-size: 12px;
+      color: #8b949e;
+      border-bottom: 1px solid #21262d;
+      min-height: 30px;
+      transition: color .3s;
+    }
+    .statusbar.ok { color: #3fb950; }
+    .statusbar.err { color: #f85149; }
+
+    /* ── iOS banner ── */
+    .ios-banner {
+      display: none;
+      margin: 14px;
+      padding: 12px 15px;
+      background: #1a2a4a;
+      border: 1px solid #4d9de0;
+      border-radius: 12px;
+      font-size: 13px;
+      color: #8b949e;
+      line-height: 1.5;
+    }
+    .ios-banner strong { color: #4d9de0; }
+    .ios-banner a { color: #4d9de0; }
+
+    /* ── Grid ── */
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      padding: 14px;
+    }
+
+    /* ── Gauge card ── */
+    .card {
+      background: #161b22;
+      border: 1px solid #21262d;
+      border-radius: 16px;
+      padding: 18px 14px 14px;
+      text-align: center;
+      position: relative;
+      overflow: hidden;
+      transition: border-color .3s;
+    }
+    .card::before {
+      content: '';
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      height: 3px;
+      background: var(--c, #4d9de0);
+      border-radius: 16px 16px 0 0;
+    }
+    .card.full  { grid-column: 1 / -1; }
+    .card.rpm   { --c: #e34c26; }
+    .card.spd   { --c: #3fb950; }
+    .card.cool  { --c: #4d9de0; }
+    .card.oil   { --c: #d29922; }
+    .card.thr   { --c: #bc8cff; }
+
+    .card-label {
+      font-size: 10px;
+      color: #8b949e;
+      text-transform: uppercase;
+      letter-spacing: 1.2px;
+      margin-bottom: 6px;
+    }
+    .card-value {
+      font-size: 48px;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+      line-height: 1;
+      color: #e6edf3;
+      transition: color .2s;
+    }
+    .card.full .card-value { font-size: 72px; }
+    .card-value.na { font-size: 22px; color: #8b949e; }
+    .card-unit {
+      font-size: 12px;
+      color: #8b949e;
+      margin-top: 5px;
+    }
+
+    /* progress bar */
+    .bar-track {
+      margin-top: 10px;
+      height: 4px;
+      background: #21262d;
+      border-radius: 2px;
+      overflow: hidden;
+    }
+    .bar-fill {
+      height: 100%;
+      border-radius: 2px;
+      background: var(--c, #4d9de0);
+      width: 0%;
+      transition: width .25s ease;
+    }
+    /* temperature warning color */
+    .hot { color: #f85149 !important; }
+
+    /* ── Footer ── */
+    .footer {
+      padding: 6px 18px 20px;
+      font-size: 10px;
+      color: #484f58;
+      text-align: center;
+    }
+
+    @media (max-width: 360px) {
+      .card-value { font-size: 38px; }
+      .card.full .card-value { font-size: 58px; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- Header -->
+<div class="header">
+  <div class="logo-area">
+    <div class="status-dot" id="dot"></div>
+    <div class="logo">BMW <span>E87 · 118d</span></div>
+  </div>
+  <button class="connect-btn" id="btn" onclick="handleConnect()">Csatlakozás</button>
+</div>
+
+<!-- Status -->
+<div class="statusbar" id="statusbar">Nincs csatlakozva — nyomj a Csatlakozás gombra</div>
+
+<!-- iOS info -->
+<div class="ios-banner" id="iosBanner">
+  <strong>iOS / Safari felhasználó?</strong><br>
+  A Safari nem támogatja a Web Bluetooth API-t. Töltsd le a
+  <strong><a href="https://apps.apple.com/app/webble/id1193531073" target="_blank">WebBLE</a></strong>
+  appot az App Store-ból (ingyenes), és ebben a böngészőben nyisd meg ezt az oldalt.
+  Androidon Chrome-ban közvetlenül működik.
+</div>
+
+<!-- Gauges -->
+<div class="grid">
+
+  <!-- RPM -->
+  <div class="card rpm full">
+    <div class="card-label">Fordulatszám</div>
+    <div class="card-value" id="rpmVal">—</div>
+    <div class="card-unit">RPM</div>
+    <div class="bar-track"><div class="bar-fill" id="rpmBar"></div></div>
+  </div>
+
+  <!-- Speed -->
+  <div class="card spd">
+    <div class="card-label">Sebesség</div>
+    <div class="card-value" id="spdVal">—</div>
+    <div class="card-unit">km/h</div>
+    <div class="bar-track"><div class="bar-fill" id="spdBar"></div></div>
+  </div>
+
+  <!-- Coolant -->
+  <div class="card cool">
+    <div class="card-label">Hűtővíz</div>
+    <div class="card-value" id="coolVal">—</div>
+    <div class="card-unit">°C</div>
+    <div class="bar-track"><div class="bar-fill" id="coolBar"></div></div>
+  </div>
+
+  <!-- Oil temp -->
+  <div class="card oil">
+    <div class="card-label">Olajhő</div>
+    <div class="card-value" id="oilVal">—</div>
+    <div class="card-unit">°C</div>
+    <div class="bar-track"><div class="bar-fill" id="oilBar"></div></div>
+  </div>
+
+  <!-- Throttle -->
+  <div class="card thr">
+    <div class="card-label">Gázpedál</div>
+    <div class="card-value" id="thrVal">—</div>
+    <div class="card-unit">%</div>
+    <div class="bar-track"><div class="bar-fill" id="thrBar"></div></div>
+  </div>
+
+</div>
+
+<div class="footer" id="footer">Vgate vLinker MC+ 4.0 · BLE · ELM327</div>
+
+<script>
+// ─────────────────────────────────────────────
+//  BLE profiles to try (FFF0 = vLinker, FFE0 = HM-10 fallback)
+// ─────────────────────────────────────────────
+const PROFILES = [
+  {
+    name: 'FFF0',
+    service:  '0000fff0-0000-1000-8000-00805f9b34fb',
+    write:    '0000fff2-0000-1000-8000-00805f9b34fb',
+    notify:   '0000fff1-0000-1000-8000-00805f9b34fb',
+  },
+  {
+    name: 'FFE0',
+    service:  '0000ffe0-0000-1000-8000-00805f9b34fb',
+    write:    '0000ffe1-0000-1000-8000-00805f9b34fb',
+    notify:   '0000ffe1-0000-1000-8000-00805f9b34fb',
+  },
+];
+
+// ─────────────────────────────────────────────
+//  State
+// ─────────────────────────────────────────────
+let gattDevice  = null;
+let writeChar   = null;
+let rxBuf       = '';
+let pending     = null;   // { resolve, reject, timer }
+let running     = false;  // polling loop active
+let oilPid      = null;   // 0x5C or null
+let accelPid    = null;   // 0x49/0x4A/0x11 or null
+
+// ─────────────────────────────────────────────
+//  UI helpers
+// ─────────────────────────────────────────────
+function setStatus(msg, cls = '') {
+  const el = document.getElementById('statusbar');
+  el.textContent = msg;
+  el.className = 'statusbar ' + cls;
+}
+function setConnUI(on) {
+  document.getElementById('dot').className = 'status-dot' + (on ? ' connected' : '');
+  const btn = document.getElementById('btn');
+  btn.textContent = on ? 'Lecsatlakozás' : 'Csatlakozás';
+  btn.className   = 'connect-btn' + (on ? ' disconnecting' : '');
+}
+function val(id, txt, extra = '') {
+  const el = document.getElementById(id);
+  el.textContent = txt;
+  el.className = 'card-value' + (extra ? ' ' + extra : '');
+}
+function bar(id, pct) {
+  document.getElementById(id).style.width = Math.min(Math.max(pct, 0), 100) + '%';
+}
+function resetAll() {
+  ['rpmVal','spdVal','coolVal','oilVal','thrVal'].forEach(id => val(id, '—'));
+  ['rpmBar','spdBar','coolBar','oilBar','thrBar'].forEach(id => bar(id, 0));
+}
+
+// ─────────────────────────────────────────────
+//  BLE RX handler
+// ─────────────────────────────────────────────
+function onRx(event) {
+  rxBuf += new TextDecoder('ascii').decode(event.target.value);
+  if (rxBuf.includes('>')) {
+    if (pending) {
+      clearTimeout(pending.timer);
+      const { resolve } = pending;
+      pending = null;
+      const resp = rxBuf;
+      rxBuf = '';
+      resolve(resp);
+    } else {
+      rxBuf = '';
+    }
+  }
+}
+
+// ─────────────────────────────────────────────
+//  Send AT / OBD command, wait for '>' prompt
+// ─────────────────────────────────────────────
+function send(cmd, timeout = 3500) {
+  return new Promise((resolve, reject) => {
+    if (!writeChar) { reject(new Error('Nincs írható karakterisztika')); return; }
+    pending = {
+      resolve,
+      reject,
+      timer: setTimeout(() => {
+        pending = null;
+        rxBuf = '';
+        reject(new Error('Timeout: ' + cmd));
+      }, timeout),
+    };
+    const bytes = new TextEncoder().encode(cmd + '\r');
+    const p = writeChar.writeValueWithoutResponse
+      ? writeChar.writeValueWithoutResponse(bytes)
+      : writeChar.writeValue(bytes);
+    p.catch(err => {
+      // fallback to writeValue if withoutResponse failed
+      if (writeChar.writeValue) writeChar.writeValue(bytes).catch(() => {});
+    });
+  });
+}
+
+// ─────────────────────────────────────────────
+//  Parse ELM327 response (headers off, spaces off)
+//  Returns array of data bytes or null
+// ─────────────────────────────────────────────
+function parse(raw, mode, pid) {
+  const clean = raw.replace(/>/g, '').replace(/\s+/g, '').toUpperCase();
+  // "NO DATA", "ERROR", "UNABLE TO CONNECT" etc.
+  if (clean.includes('NODATA') || clean.includes('ERROR') || clean.includes('STOPPED')) return null;
+  const hdr = ((mode + 0x40).toString(16).padStart(2,'0') + pid.toString(16).padStart(2,'0')).toUpperCase();
+  const idx = clean.indexOf(hdr);
+  if (idx === -1) return null;
+  const hex = clean.slice(idx + 4);
+  const bytes = [];
+  for (let i = 0; i + 1 < hex.length; i += 2) bytes.push(parseInt(hex.slice(i, i+2), 16));
+  return bytes.length ? bytes : null;
+}
+
+// ─────────────────────────────────────────────
+//  Query single OBD PID
+// ─────────────────────────────────────────────
+async function qpid(mode, pid) {
+  const cmd = mode.toString(16).padStart(2,'0') + pid.toString(16).padStart(2,'0');
+  try {
+    const raw = await send(cmd, 2000);
+    return parse(raw, mode, pid);
+  } catch { return null; }
+}
+
+// ─────────────────────────────────────────────
+//  ELM327 init sequence
+// ─────────────────────────────────────────────
+async function elm327Init() {
+  setStatus('ELM327 reset...');
+  await send('ATZ', 5000);
+  await new Promise(r => setTimeout(r, 1200)); // wait for reset complete
+
+  setStatus('Inicializálás...');
+  for (const cmd of ['ATE0','ATL0','ATS0','ATH0','ATAT1','ATSP0']) {
+    await send(cmd).catch(() => {});
+  }
+
+  setStatus('Protokoll felismerés...');
+  await send('0100', 6000).catch(() => {}); // triggers auto-protocol detection
+
+  // Probe optional PIDs
+  setStatus('Elérhető PID-ek ellenőrzése...');
+  oilPid   = (await qpid(1, 0x5C)) ? 0x5C : null;
+  // Accelerator pedal: try 0x49 (D), 0x4A (E), then abs throttle 0x11
+  accelPid = null;
+  for (const p of [0x49, 0x4A, 0x11, 0x4B]) {
+    if (await qpid(1, p)) { accelPid = p; break; }
+  }
+
+  if (!oilPid)   val('oilVal', 'N/A', 'na');
+  if (!accelPid) val('thrVal', 'N/A', 'na');
+
+  const footer = `Vgate vLinker MC+ 4.0 · BLE · olajhő: ${oilPid ? 'PID 5C' : 'nem támogatott'} · gázpedál: ${accelPid ? 'PID ' + accelPid.toString(16).toUpperCase() : 'nem támogatott'}`;
+  document.getElementById('footer').textContent = footer;
+
+  setStatus('Kapcsolódva — adatok fogadása', 'ok');
+}
+
+// ─────────────────────────────────────────────
+//  Polling loop
+// ─────────────────────────────────────────────
+async function pollLoop() {
+  while (running) {
+    // RPM  (010C) — A*256+B / 4
+    const rpm = await qpid(1, 0x0C);
+    if (rpm && rpm.length >= 2) {
+      const v = Math.round(((rpm[0] << 8) | rpm[1]) / 4);
+      val('rpmVal', v.toLocaleString('hu'));
+      bar('rpmBar', v / 8000 * 100);
+    }
+
+    // Speed (010D) — A km/h
+    const spd = await qpid(1, 0x0D);
+    if (spd) {
+      val('spdVal', spd[0]);
+      bar('spdBar', spd[0] / 260 * 100);
+    }
+
+    // Coolant (0105) — A-40 °C
+    const cool = await qpid(1, 0x05);
+    if (cool) {
+      const t = cool[0] - 40;
+      val('coolVal', t, t >= 110 ? 'hot' : '');
+      bar('coolBar', (t + 40) / 160 * 100);
+    }
+
+    // Oil temp (015C) — A-40 °C
+    if (oilPid) {
+      const oil = await qpid(1, oilPid);
+      if (oil) {
+        const t = oil[0] - 40;
+        val('oilVal', t, t >= 130 ? 'hot' : '');
+        bar('oilBar', (t + 40) / 200 * 100);
+      }
+    }
+
+    // Accelerator / throttle (0x49=D, 0x4A=E, 0x11=abs throttle) — A/255*100
+    if (accelPid) {
+      const thr = await qpid(1, accelPid);
+      if (thr) {
+        const pct = Math.round(thr[0] / 255 * 100);
+        val('thrVal', pct);
+        bar('thrBar', pct);
+      }
+    }
+  }
+}
+
+// ─────────────────────────────────────────────
+//  Connect / disconnect
+// ─────────────────────────────────────────────
+async function handleConnect() {
+  if (gattDevice && gattDevice.gatt.connected) {
+    running = false;
+    gattDevice.gatt.disconnect();
+    return; // onDisconnect fires
+  }
+
+  if (!navigator.bluetooth) {
+    const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
+    document.getElementById('iosBanner').style.display = isIOS ? 'block' : 'none';
+    setStatus(isIOS
+      ? 'Safari nem támogatja — használd a WebBLE appot (lásd fent)'
+      : 'Ez a böngésző nem támogatja a Web Bluetooth API-t (Chrome szükséges)',
+      'err');
+    return;
+  }
+
+  const btn = document.getElementById('btn');
+  btn.disabled = true;
+  setStatus('Bluetooth eszköz keresése...');
+
+  try {
+    // First try named filters
+    let device;
+    try {
+      device = await navigator.bluetooth.requestDevice({
+        filters: [
+          { namePrefix: 'vLinker' },
+          { namePrefix: 'OBDII' },
+          { namePrefix: 'OBD' },
+          { namePrefix: 'ELM327' },
+          { namePrefix: 'ELM' },
+        ],
+        optionalServices: PROFILES.map(p => p.service),
+      });
+    } catch (e) {
+      if (e.name !== 'NotFoundError') throw e;
+      // Fallback: show all BLE devices
+      device = await navigator.bluetooth.requestDevice({
+        acceptAllDevices: true,
+        optionalServices: PROFILES.map(p => p.service),
+      });
+    }
+
+    gattDevice = device;
+    setStatus('Csatlakozás: ' + (device.name || 'ismeretlen') + '...');
+    const server = await device.gatt.connect();
+
+    // Try each BLE profile
+    let connected = false;
+    for (const prof of PROFILES) {
+      try {
+        const svc  = await server.getPrimaryService(prof.service);
+        writeChar  = await svc.getCharacteristic(prof.write);
+        const notif = await svc.getCharacteristic(prof.notify);
+        await notif.startNotifications();
+        notif.addEventListener('characteristicvaluechanged', onRx);
+        setStatus('BLE profil: ' + prof.name);
+        connected = true;
+        break;
+      } catch { /* try next */ }
+    }
+
+    if (!connected) throw new Error('Egyik BLE profil sem működött (FFF0 / FFE0)');
+
+    device.addEventListener('gattserverdisconnected', onDisconnect);
+    setConnUI(true);
+
+    await elm327Init();
+    running = true;
+    pollLoop();
+
+  } catch (e) {
+    const msg = e.name === 'NotFoundError' ? 'Eszköz kiválasztás megszakítva' : 'Hiba: ' + e.message;
+    setStatus(msg, 'err');
+    gattDevice = null;
+    writeChar  = null;
+    setConnUI(false);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function onDisconnect() {
+  running    = false;
+  gattDevice = null;
+  writeChar  = null;
+  setConnUI(false);
+  resetAll();
+  setStatus('Kapcsolat megszakadt — nyomj a Csatlakozás gombra', 'err');
+}
+
+// ─────────────────────────────────────────────
+//  Show iOS banner immediately if needed
+// ─────────────────────────────────────────────
+if (/iPad|iPhone|iPod/.test(navigator.userAgent) && !navigator.bluetooth) {
+  document.getElementById('iosBanner').style.display = 'block';
+}
+
+// Service worker
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('sw.js').catch(() => {});
+}
+</script>
+</body>
+</html>
