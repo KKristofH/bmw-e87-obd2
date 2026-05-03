@@ -1,5 +1,5 @@
-const CACHE = 'bmw-obd2-v1';
-const ASSETS = ['./index.html', './manifest.json', './icon.svg'];
+const CACHE = 'bmw-obd2-v2';
+const ASSETS = ['./index.html', './manifest.json', './icon.svg', './icon-180.png'];
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(ASSETS).catch(() => {})));
