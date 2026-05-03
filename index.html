@@ -264,33 +264,35 @@
 
 <script>
 // ─────────────────────────────────────────────
-//  BLE profiles to try (FFF0 = vLinker, FFE0 = HM-10 fallback)
+//  Minden ismert BLE UART service UUID (auto-discovery)
+//  A vLinker MC+ 4.0 sajátos UUID-je ismeretlen → kipróbáljuk az összeset
 // ─────────────────────────────────────────────
-const PROFILES = [
-  {
-    name: 'FFF0',
-    service:  '0000fff0-0000-1000-8000-00805f9b34fb',
-    write:    '0000fff2-0000-1000-8000-00805f9b34fb',
-    notify:   '0000fff1-0000-1000-8000-00805f9b34fb',
-  },
-  {
-    name: 'FFE0',
-    service:  '0000ffe0-0000-1000-8000-00805f9b34fb',
-    write:    '0000ffe1-0000-1000-8000-00805f9b34fb',
-    notify:   '0000ffe1-0000-1000-8000-00805f9b34fb',
-  },
+const CANDIDATE_SERVICES = [
+  '0000fff0-0000-1000-8000-00805f9b34fb',  // FFF0  – általános ELM327
+  '0000ffe0-0000-1000-8000-00805f9b34fb',  // FFE0  – HM-10 chip
+  '0000ffe5-0000-1000-8000-00805f9b34fb',  // FFE5  – HM-10 variáns
+  '0000ffd0-0000-1000-8000-00805f9b34fb',  // FFD0  – egyes klónok
+  '6e400001-b5a3-f393-e0a9-e50e24dcca9e',  // Nordic UART (NUS)
+  '49535343-fe7d-4ae5-8fa9-9fafd205e455',  // Microchip MLDP (RN4020)
+  'e7810a71-73ae-499d-8c15-faa9aef0c3f2',  // Veepeak / KONNWEI
+  '0000abcd-0000-1000-8000-00805f9b34fb',  // ABCD  – kínai klónok
+  '000018f0-0000-1000-8000-00805f9b34fb',  // 18F0  – egyes adapterek
+  '00002af0-0000-1000-8000-00805f9b34fb',  // 2AF0  – ritkább variáns
 ];
 
+<script>
 // ─────────────────────────────────────────────
 //  State
 // ─────────────────────────────────────────────
-let gattDevice  = null;
-let writeChar   = null;
-let rxBuf       = '';
-let pending     = null;   // { resolve, reject, timer }
-let running     = false;  // polling loop active
-let oilPid      = null;   // 0x5C or null
-let accelPid    = null;   // 0x49/0x4A/0x11 or null
+let gattDevice = null;
+let writeChar  = null;
+let rxBuf      = '';
+let pending    = null;   // { resolve, reject, timer }
+let running    = false;
+let oilPid     = null;
+let accelPid   = null;
+
+const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 // ─────────────────────────────────────────────
 //  UI helpers
@@ -299,6 +301,7 @@ function setStatus(msg, cls = '') {
   const el = document.getElementById('statusbar');
   el.textContent = msg;
   el.className = 'statusbar ' + cls;
+  console.log('[OBD]', msg);
 }
 function setConnUI(on) {
   document.getElementById('dot').className = 'status-dot' + (on ? ' connected' : '');
@@ -323,7 +326,7 @@ function resetAll() {
 //  BLE RX handler
 // ─────────────────────────────────────────────
 function onRx(event) {
-  rxBuf += new TextDecoder('ascii').decode(event.target.value);
+  rxBuf += new TextDecoder('latin1').decode(event.target.value);
   if (rxBuf.includes('>')) {
     if (pending) {
       clearTimeout(pending.timer);
@@ -341,89 +344,186 @@ function onRx(event) {
 // ─────────────────────────────────────────────
 //  Send AT / OBD command, wait for '>' prompt
 // ─────────────────────────────────────────────
-function send(cmd, timeout = 3500) {
+function send(cmd, timeout = 4000) {
   return new Promise((resolve, reject) => {
-    if (!writeChar) { reject(new Error('Nincs írható karakterisztika')); return; }
+    if (!writeChar) { reject(new Error('Nincs writeChar')); return; }
     pending = {
-      resolve,
-      reject,
+      resolve, reject,
       timer: setTimeout(() => {
-        pending = null;
-        rxBuf = '';
+        pending = null; rxBuf = '';
         reject(new Error('Timeout: ' + cmd));
       }, timeout),
     };
     const bytes = new TextEncoder().encode(cmd + '\r');
-    const p = writeChar.writeValueWithoutResponse
-      ? writeChar.writeValueWithoutResponse(bytes)
-      : writeChar.writeValue(bytes);
-    p.catch(err => {
-      // fallback to writeValue if withoutResponse failed
-      if (writeChar.writeValue) writeChar.writeValue(bytes).catch(() => {});
+    // Prefer writeWithoutResponse, fall back to writeValue
+    const doWrite = () => {
+      if (typeof writeChar.writeValueWithoutResponse === 'function') {
+        return writeChar.writeValueWithoutResponse(bytes);
+      }
+      return writeChar.writeValue(bytes);
+    };
+    doWrite().catch(() => {
+      // Last resort fallback
+      if (typeof writeChar.writeValue === 'function') {
+        writeChar.writeValue(bytes).catch(() => {});
+      }
     });
   });
 }
 
 // ─────────────────────────────────────────────
-//  Parse ELM327 response (headers off, spaces off)
-//  Returns array of data bytes or null
+//  Parse ELM327 OBD response → byte array or null
+//  Works with ATH0 (headers off) + ATS0 (spaces off)
+//  BMW CAN multi-response: look for the right header anywhere in response
 // ─────────────────────────────────────────────
 function parse(raw, mode, pid) {
-  const clean = raw.replace(/>/g, '').replace(/\s+/g, '').toUpperCase();
-  // "NO DATA", "ERROR", "UNABLE TO CONNECT" etc.
-  if (clean.includes('NODATA') || clean.includes('ERROR') || clean.includes('STOPPED')) return null;
-  const hdr = ((mode + 0x40).toString(16).padStart(2,'0') + pid.toString(16).padStart(2,'0')).toUpperCase();
+  const clean = raw.replace(/>/g, '').replace(/[\r\n\s]/g, '').toUpperCase();
+  if (/NODATA|UNABLETOCONNECT|ERROR|STOPPED|BUSBUSY|BUSERROR/.test(clean)) return null;
+  const hdr = ((mode + 0x40).toString(16).padStart(2,'0') +
+               pid.toString(16).padStart(2,'0')).toUpperCase();
   const idx = clean.indexOf(hdr);
   if (idx === -1) return null;
   const hex = clean.slice(idx + 4);
   const bytes = [];
-  for (let i = 0; i + 1 < hex.length; i += 2) bytes.push(parseInt(hex.slice(i, i+2), 16));
+  for (let i = 0; i + 1 < hex.length; i += 2) {
+    const b = parseInt(hex.slice(i, i + 2), 16);
+    if (isNaN(b)) break;
+    bytes.push(b);
+  }
   return bytes.length ? bytes : null;
 }
 
 // ─────────────────────────────────────────────
-//  Query single OBD PID
+//  Query single OBD PID (safe — never throws)
 // ─────────────────────────────────────────────
-async function qpid(mode, pid) {
+async function qpid(mode, pid, timeout = 2500) {
   const cmd = mode.toString(16).padStart(2,'0') + pid.toString(16).padStart(2,'0');
   try {
-    const raw = await send(cmd, 2000);
+    const raw = await send(cmd, timeout);
     return parse(raw, mode, pid);
   } catch { return null; }
 }
 
 // ─────────────────────────────────────────────
-//  ELM327 init sequence
+//  AUTO-DISCOVER BLE service + characteristics
+//  Próbálja az összes ismert UUID-t sorban.
+//  Az első működőt visszaadja: { svcUUID, writeChar, notifyChar }
 // ─────────────────────────────────────────────
-async function elm327Init() {
-  setStatus('ELM327 reset...');
-  await send('ATZ', 5000);
-  await new Promise(r => setTimeout(r, 1200)); // wait for reset complete
+async function discoverBLE(server) {
+  for (const svcUUID of CANDIDATE_SERVICES) {
+    let svc;
+    try { svc = await server.getPrimaryService(svcUUID); }
+    catch { continue; }
 
-  setStatus('Inicializálás...');
-  for (const cmd of ['ATE0','ATL0','ATS0','ATH0','ATAT1','ATSP0']) {
-    await send(cmd).catch(() => {});
+    setStatus('Szolgáltatás: ' + svcUUID.slice(4, 8).toUpperCase() + ' — karakterisztikák...');
+
+    let chars;
+    try { chars = await svc.getCharacteristics(); }
+    catch { continue; }
+
+    let wc = null, nc = null;
+    for (const c of chars) {
+      const p = c.properties;
+      if (!wc && (p.writeWithoutResponse || p.write)) wc = c;
+      if (!nc && p.notify) nc = c;
+    }
+    // Egyes adapterek: ugyanaz a karakterisztika írásra ÉS értesítésre
+    if (wc && !nc && wc.properties.notify) nc = wc;
+
+    if (wc && nc) {
+      return { svcUUID, wc, nc };
+    }
+  }
+  return null;
+}
+
+// ─────────────────────────────────────────────
+//  BMW E87 ELM327 init
+//  – ISO 15765-4 CAN 11-bit 500kbps (ATSP6)
+//  – 7DF broadcast → ha nem válaszol: 7E0 direkt DME
+//  – BMW standard Mode 01 OBD2 (NEM titkosított!)
+// ─────────────────────────────────────────────
+async function bmwInit() {
+  const t = cmd => send(cmd).catch(() => null);
+
+  setStatus('ELM327 reset...');
+  await send('ATZ', 6000).catch(() => {});
+  await sleep(1500);
+
+  setStatus('Alapbeállítások...');
+  await t('ATE0');   // Echo ki
+  await t('ATL0');   // Soremelés ki
+  await t('ATS0');   // Szóközök ki
+  await t('ATH0');   // Fejlécek ki
+  await t('ATAT2');  // Agresszív adaptív timing (BMW dieselhez jobb)
+  await t('ATST FF'); // Max timeout az ELM327-ben
+
+  // ── BMW E87 protokoll: ISO 15765-4 CAN 11-bit 500kbps ──
+  setStatus('BMW CAN protokoll (ATSP6)...');
+  await t('ATSP6');  // Explicit CAN 11-bit 500kbps — ne auto-detektáljon
+
+  // ── Functional broadcast: 7DF (OBD2 szabvány) ──
+  setStatus('BMW OBD2 fejléc beállítása (7DF)...');
+  await t('ATSH 7DF');
+  await t('ATFCSH 7E0');  // Flow control header → DME
+  await t('ATFCSD 30 00 00'); // Flow control adatok
+  await t('ATFCSM 1');    // Flow control mód 1
+
+  // ── OBD kapcsolat teszt ──
+  setStatus('BMW OBD2 kapcsolat teszt...');
+  let testOK = false;
+  let r = await send('0100', 8000).catch(() => null);
+  if (r && !r.includes('UNABLE') && !r.includes('ERROR') && r.includes('41')) {
+    testOK = true;
+    setStatus('BMW 7DF broadcast: OK');
   }
 
-  setStatus('Protokoll felismerés...');
-  await send('0100', 6000).catch(() => {}); // triggers auto-protocol detection
+  if (!testOK) {
+    // Fallback: direkt DME (7E0) fizikai cím
+    setStatus('Fallback: direkt DME (7E0)...');
+    await t('ATSH 7E0');
+    r = await send('0100', 8000).catch(() => null);
+    if (r && r.includes('41')) {
+      testOK = true;
+      setStatus('BMW 7E0 direkt DME: OK');
+    }
+  }
 
-  // Probe optional PIDs
+  if (!testOK) {
+    // Utolsó esély: vissza auto-protokollra
+    setStatus('Auto protokoll próba...');
+    await t('ATSP0');
+    await t('ATSH 7DF');
+    r = await send('0100', 8000).catch(() => null);
+    testOK = !!(r && r.includes('41'));
+  }
+
+  if (!testOK) {
+    setStatus('OBD2 nem válaszol — gyújtás be van? Motor forog?', 'err');
+    return false;
+  }
+
+  // ── PID discovery ──
   setStatus('Elérhető PID-ek ellenőrzése...');
-  oilPid   = (await qpid(1, 0x5C)) ? 0x5C : null;
-  // Accelerator pedal: try 0x49 (D), 0x4A (E), then abs throttle 0x11
+
+  // Olajhő: Mode 01 PID 5C (standard), ha nem megy: semmi (Mode 22 BMW-specifikus)
+  oilPid = (await qpid(1, 0x5C, 3000)) ? 0x5C : null;
+
+  // Gázpedál: 0x49 (D), 0x4A (E), 0x11 (abs throttle), 0x4B (F)
   accelPid = null;
   for (const p of [0x49, 0x4A, 0x11, 0x4B]) {
-    if (await qpid(1, p)) { accelPid = p; break; }
+    if (await qpid(1, p, 3000)) { accelPid = p; break; }
   }
 
   if (!oilPid)   val('oilVal', 'N/A', 'na');
   if (!accelPid) val('thrVal', 'N/A', 'na');
 
-  const footer = `Vgate vLinker MC+ 4.0 · BLE · olajhő: ${oilPid ? 'PID 5C' : 'nem támogatott'} · gázpedál: ${accelPid ? 'PID ' + accelPid.toString(16).toUpperCase() : 'nem támogatott'}`;
-  document.getElementById('footer').textContent = footer;
+  const svcShort = document.getElementById('footer').textContent.split('·')[1] || 'BLE';
+  document.getElementById('footer').textContent =
+    `BMW E87 N47 · ${svcShort.trim()} · olaj: ${oilPid ? 'PID 5C ✓' : '–'} · gázpedál: ${accelPid ? 'PID ' + accelPid.toString(16).toUpperCase() + ' ✓' : '–'}`;
 
   setStatus('Kapcsolódva — adatok fogadása', 'ok');
+  return true;
 }
 
 // ─────────────────────────────────────────────
@@ -431,7 +531,7 @@ async function elm327Init() {
 // ─────────────────────────────────────────────
 async function pollLoop() {
   while (running) {
-    // RPM  (010C) — A*256+B / 4
+    // RPM (010C) → (A*256+B)/4
     const rpm = await qpid(1, 0x0C);
     if (rpm && rpm.length >= 2) {
       const v = Math.round(((rpm[0] << 8) | rpm[1]) / 4);
@@ -439,14 +539,14 @@ async function pollLoop() {
       bar('rpmBar', v / 8000 * 100);
     }
 
-    // Speed (010D) — A km/h
+    // Sebesség (010D) → A km/h
     const spd = await qpid(1, 0x0D);
     if (spd) {
       val('spdVal', spd[0]);
       bar('spdBar', spd[0] / 260 * 100);
     }
 
-    // Coolant (0105) — A-40 °C
+    // Hűtővíz (0105) → A-40 °C
     const cool = await qpid(1, 0x05);
     if (cool) {
       const t = cool[0] - 40;
@@ -454,7 +554,7 @@ async function pollLoop() {
       bar('coolBar', (t + 40) / 160 * 100);
     }
 
-    // Oil temp (015C) — A-40 °C
+    // Olajhő (015C) → A-40 °C
     if (oilPid) {
       const oil = await qpid(1, oilPid);
       if (oil) {
@@ -464,7 +564,7 @@ async function pollLoop() {
       }
     }
 
-    // Accelerator / throttle (0x49=D, 0x4A=E, 0x11=abs throttle) — A/255*100
+    // Gázpedál (A/255*100 %)
     if (accelPid) {
       const thr = await qpid(1, accelPid);
       if (thr) {
@@ -483,15 +583,15 @@ async function handleConnect() {
   if (gattDevice && gattDevice.gatt.connected) {
     running = false;
     gattDevice.gatt.disconnect();
-    return; // onDisconnect fires
+    return;
   }
 
   if (!navigator.bluetooth) {
     const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
     document.getElementById('iosBanner').style.display = isIOS ? 'block' : 'none';
     setStatus(isIOS
-      ? 'Safari nem támogatja — használd a WebBLE appot (lásd fent)'
-      : 'Ez a böngésző nem támogatja a Web Bluetooth API-t (Chrome szükséges)',
+      ? 'Safari nem támogatja — használd a Bluefy appot'
+      : 'Web Bluetooth nem támogatott (Chrome kell)',
       'err');
     return;
   }
@@ -501,7 +601,8 @@ async function handleConnect() {
   setStatus('Bluetooth eszköz keresése...');
 
   try {
-    // First try named filters
+    // Eszköz kiválasztás — összes kandidáns service opcionálisként megadva
+    // hogy a discoverBLE() elérje őket
     let device;
     try {
       device = await navigator.bluetooth.requestDevice({
@@ -511,48 +612,57 @@ async function handleConnect() {
           { namePrefix: 'OBD' },
           { namePrefix: 'ELM327' },
           { namePrefix: 'ELM' },
+          { namePrefix: 'VGATE' },
+          { namePrefix: 'Vgate' },
         ],
-        optionalServices: PROFILES.map(p => p.service),
+        optionalServices: CANDIDATE_SERVICES,
       });
     } catch (e) {
       if (e.name !== 'NotFoundError') throw e;
-      // Fallback: show all BLE devices
+      // Fallback: minden BLE eszköz megjelenítése
+      setStatus('Névszűrő nem talált — összes BLE eszköz listázása...');
       device = await navigator.bluetooth.requestDevice({
         acceptAllDevices: true,
-        optionalServices: PROFILES.map(p => p.service),
+        optionalServices: CANDIDATE_SERVICES,
       });
     }
 
     gattDevice = device;
-    setStatus('Csatlakozás: ' + (device.name || 'ismeretlen') + '...');
+    setStatus('GATT csatlakozás: ' + (device.name || '?') + '...');
     const server = await device.gatt.connect();
 
-    // Try each BLE profile
-    let connected = false;
-    for (const prof of PROFILES) {
-      try {
-        const svc  = await server.getPrimaryService(prof.service);
-        writeChar  = await svc.getCharacteristic(prof.write);
-        const notif = await svc.getCharacteristic(prof.notify);
-        await notif.startNotifications();
-        notif.addEventListener('characteristicvaluechanged', onRx);
-        setStatus('BLE profil: ' + prof.name);
-        connected = true;
-        break;
-      } catch { /* try next */ }
+    // ── AUTO-DISCOVER BLE profile ──
+    setStatus('BLE profil keresése (10 UUID próba)...');
+    const profile = await discoverBLE(server);
+    if (!profile) {
+      throw new Error(
+        'Ismeretlen BLE profil — a vLinker UUID-je egyikkel sem egyezik. ' +
+        'Próbáld a Bluefy konzol logjában megnézni a tényleges UUID-t.'
+      );
     }
 
-    if (!connected) throw new Error('Egyik BLE profil sem működött (FFF0 / FFE0)');
+    writeChar = profile.wc;
+    await profile.nc.startNotifications();
+    profile.nc.addEventListener('characteristicvaluechanged', onRx);
+
+    const shortUUID = profile.svcUUID.slice(4, 8).toUpperCase();
+    document.getElementById('footer').textContent =
+      `Vgate vLinker MC+ 4.0 · BLE ${shortUUID} · ELM327`;
+    setStatus('BLE OK (' + shortUUID + ') — BMW init...');
 
     device.addEventListener('gattserverdisconnected', onDisconnect);
     setConnUI(true);
 
-    await elm327Init();
-    running = true;
-    pollLoop();
+    const ok = await bmwInit();
+    if (ok) {
+      running = true;
+      pollLoop();
+    }
 
   } catch (e) {
-    const msg = e.name === 'NotFoundError' ? 'Eszköz kiválasztás megszakítva' : 'Hiba: ' + e.message;
+    const msg = e.name === 'NotFoundError'
+      ? 'Eszköz kiválasztás megszakítva'
+      : 'Hiba: ' + e.message;
     setStatus(msg, 'err');
     gattDevice = null;
     writeChar  = null;
@@ -563,17 +673,12 @@ async function handleConnect() {
 }
 
 function onDisconnect() {
-  running    = false;
-  gattDevice = null;
-  writeChar  = null;
-  setConnUI(false);
-  resetAll();
+  running = false; gattDevice = null; writeChar = null;
+  setConnUI(false); resetAll();
   setStatus('Kapcsolat megszakadt — nyomj a Csatlakozás gombra', 'err');
 }
 
-// ─────────────────────────────────────────────
-//  Show iOS banner immediately if needed
-// ─────────────────────────────────────────────
+// iOS banner
 if (/iPad|iPhone|iPod/.test(navigator.userAgent) && !navigator.bluetooth) {
   document.getElementById('iosBanner').style.display = 'block';
 }
