@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192">
+  <rect width="192" height="192" rx="40" fill="#0d1117"/>
+  <circle cx="96" cy="96" r="70" fill="none" stroke="#21262d" stroke-width="6"/>
+  <!-- BMW roundel quadrants -->
+  <path d="M26,96 A70,70 0 0,1 96,26 L96,96 Z" fill="#4d9de0"/>
+  <path d="M96,26 A70,70 0 0,1 166,96 L96,96 Z" fill="#e6edf3"/>
+  <path d="M166,96 A70,70 0 0,1 96,166 L96,96 Z" fill="#4d9de0"/>
+  <path d="M96,166 A70,70 0 0,1 26,96 L96,96 Z" fill="#e6edf3"/>
+  <circle cx="96" cy="96" r="70" fill="none" stroke="#21262d" stroke-width="5"/>
+  <circle cx="96" cy="96" r="22" fill="#0d1117" stroke="#21262d" stroke-width="4"/>
+  <text x="96" y="101" text-anchor="middle" font-family="Arial Black, sans-serif" font-size="13" font-weight="900" fill="#e6edf3">BMW</text>
+</svg>
